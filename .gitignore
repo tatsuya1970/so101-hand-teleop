@@ -1,0 +1,11 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# MediaPipe モデル(README のコマンドでダウンロード)
+hand_teleop/hand_landmarker.task
+
+# ローカル設定
+.claude/
+.DS_Store
