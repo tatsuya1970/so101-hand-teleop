@@ -9,3 +9,4 @@ hand_teleop/hand_landmarker.task
 # ローカル設定
 .claude/
 .DS_Store
+hand_teleop/hand_teleop_calib.json

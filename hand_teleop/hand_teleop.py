@@ -26,6 +26,7 @@ import os
 import sys
 import time
 import math
+import json
 import argparse
 
 import cv2
@@ -37,6 +38,8 @@ from mediapipe.tasks.python import vision as mp_vision
 
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "hand_landmarker.task")
+CALIB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "hand_teleop_calib.json")
 
 # ----------------------------- CONFIG -----------------------------
 CONFIG = {
@@ -51,15 +54,21 @@ CONFIG = {
     # 肩をやや前傾+肘をやや伸ばし、少し前に構えた姿勢
     "neutral": [0.0, 0.5, -0.2, -0.3, 0.0, 1.1],
 
-    # --- 各軸の振り幅(rad)。中立からの最大変化 ---
-    "range_pan": 0.9,       # 左右(土台) ±0.9rad ≈ ±51°
-    "range_shoulder": 0.45, # 前後(肩)
-    "range_elbow": 0.55,    # 上下(肘)
+    # --- 左右(土台の回転) ---
+    "range_pan": 0.9,       # ±0.9rad ≈ ±51°
+
+    # --- 前後リーチ(shoulder+elbow 協調)。手を近づけると前へ伸びる ---
+    # shoulder だけだと近距離側でリーチが飽和するため elbow を逆方向に連動
+    "reach_shoulder": 0.45,
+    "reach_elbow": 0.50,
+
+    # --- 上下(shoulder オフセットで腕全体を上下) ---
+    "lift_shoulder": 0.40,
 
     # 各軸の向き反転(実機で逆だったら True/False を入れ替える)
     "invert_pan": False,
-    "invert_shoulder": False,
-    "invert_elbow": False,
+    "invert_reach": False,
+    "invert_lift": False,
 
     # 手首ピッチ自動補正(グリッパーを水平に保つ)。実測: EEピッチ = -(j1+j2+j3)
     "wrist_compensation": True,
@@ -187,10 +196,13 @@ def compute_target_joints(nx, ny, fwd, open01, cfg):
     n = list(cfg["neutral"])
     sgn = lambda inv: -1.0 if inv else 1.0
 
+    reach = sgn(cfg["invert_reach"]) * fwd       # + = 前へ伸ばす(手を近づける)
+    lift = sgn(cfg["invert_lift"]) * (-ny)       # + = 上げる(手を上げる=ny負)
+
     j0 = n[0] + sgn(cfg["invert_pan"]) * (-nx) * cfg["range_pan"]
-    j1 = n[1] + sgn(cfg["invert_shoulder"]) * fwd * cfg["range_shoulder"]
-    # 画面の上(nyマイナス)=上げたい=肘を伸ばす(マイナス)方向
-    j2 = n[2] + sgn(cfg["invert_elbow"]) * ny * cfg["range_elbow"]
+    # 肩: リーチ+高さ、 肘: リーチ(逆方向に伸ばす)
+    j1 = n[1] + cfg["reach_shoulder"] * reach + cfg["lift_shoulder"] * lift
+    j2 = n[2] - cfg["reach_elbow"] * reach
     if cfg["wrist_compensation"]:
         j3 = -(j1 + j2)          # グリッパーを常に水平に
     else:
@@ -268,8 +280,25 @@ def main():
     send_interval = 1.0 / cfg["send_hz"]
     a = cfg["smoothing"]
 
+    # 保存済みキャリブレーションがあれば読み込み
+    if os.path.exists(CALIB_PATH):
+        try:
+            with open(CALIB_PATH) as f:
+                saved = json.load(f)
+            for k in ("hand_size_near", "hand_size_far"):
+                if k in saved:
+                    cfg[k] = saved[k]
+            print(f"[calib] 読み込み: near={cfg['hand_size_near']:.3f} "
+                  f"far={cfg['hand_size_far']:.3f}")
+        except Exception as e:
+            print(f"[calib] 読み込み失敗(無視): {e}")
+
+    last_hand_size = None   # n/f キャリブレーション用
+
     print("=== hand_teleop 開始(関節ダイレクト制御) ===")
     print(" q=終了  スペース=一時停止/再開  r=再センタリング")
+    print(" n=手を一番手前にかざして押す(近端登録)")
+    print(" f=手を一番遠くにかざして押す(遠端登録)")
     print(f" 送信先: {args.url}  dry_run={args.dry_run}")
 
     try:
@@ -325,8 +354,13 @@ def main():
                 sm_fwd = a * fwd + (1 - a) * sm_fwd
                 sm_open = a * open01 + (1 - a) * sm_open
 
+                last_hand_size = hand_size
+
                 # HUD
-                cv2.putText(frame, f"pinch={pinch_norm:.2f} size={hand_size:.2f}",
+                cv2.putText(frame,
+                            f"pinch={pinch_norm:.2f} size={hand_size:.3f} "
+                            f"fwd={sm_fwd:+.2f} "
+                            f"[near={cfg['hand_size_near']:.2f} far={cfg['hand_size_far']:.2f}]",
                             (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                             (0, 255, 0), 2)
 
@@ -399,6 +433,24 @@ def main():
                     center_x = (pts[0].x + pts[9].x) / 2.0
                     center_y = (pts[0].y + pts[9].y) / 2.0
                     print(f"[再センタリング] center=({center_x:.2f},{center_y:.2f})")
+            elif key in (ord('n'), ord('f')):
+                if last_hand_size is None:
+                    print("[calib] 手が検出されていません")
+                else:
+                    k = "hand_size_near" if key == ord('n') else "hand_size_far"
+                    cfg[k] = last_hand_size
+                    print(f"[calib] {k} = {last_hand_size:.3f} を登録")
+                    if cfg["hand_size_near"] <= cfg["hand_size_far"]:
+                        print("[calib] 警告: near <= far です。"
+                              "手前で n、遠くで f を押してください")
+                    try:
+                        with open(CALIB_PATH, "w") as fp:
+                            json.dump({"hand_size_near": cfg["hand_size_near"],
+                                       "hand_size_far": cfg["hand_size_far"]},
+                                      fp, indent=2)
+                        print(f"[calib] 保存しました: {CALIB_PATH}")
+                    except Exception as e:
+                        print(f"[calib] 保存失敗: {e}")
     finally:
         print("終了処理: アームをスリープ姿勢へ...")
         if not args.dry_run:
