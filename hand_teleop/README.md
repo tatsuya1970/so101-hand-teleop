@@ -1,7 +1,15 @@
-# SO-101 Webカメラ手トラッキング teleop
+# SO-101 Webカメラ手/腕トラッキング teleop
 
-Webカメラで人間の手を MediaPipe で追跡し、SO-101 を連動させる。
-制御は phosphobot の REST API 経由(逆運動学は phosphobot が内部処理)。
+Webカメラで人間の手・腕を MediaPipe で追跡し、SO-101 を連動させる。
+
+2つのバージョンがある:
+
+| スクリプト | 方式 | 特徴 |
+|---|---|---|
+| `arm_teleop.py`(推奨) | **腕全体**の骨格を3Dトラッキング | 人間の関節→ロボットの関節を1:1対応(arm shadowing)。直感的 |
+| `hand_teleop.py` | 手のひらの位置・大きさ | 手だけで操作。カメラに手だけ映せばよい |
+
+腕版の詳しい手順: [docs/arm-teleop-手順.md](../docs/arm-teleop-手順.md)
 
 ## 仕組み
 
@@ -27,11 +35,13 @@ phosphobot の /move/absolute(IK)は左右(y)を解けなかったため、
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install mediapipe opencv-python numpy requests
+pip install mediapipe opencv-python numpy requests pillow
 
-# MediaPipe の手検出モデルをダウンロード
+# MediaPipe のモデルをダウンロード(手 + 骨格)
 curl -fsSL -o hand_teleop/hand_landmarker.task \
   "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+curl -fsSL -o hand_teleop/pose_landmarker_lite.task \
+  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
 ```
 
 動作確認済み: Python 3.12 / mediapipe 0.10.35 / opencv-python 5.0 / macOS (M1)

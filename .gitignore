@@ -10,3 +10,6 @@ hand_teleop/hand_landmarker.task
 .claude/
 .DS_Store
 hand_teleop/hand_teleop_calib.json
+
+# MediaPipe Poseモデル
+hand_teleop/pose_landmarker_lite.task
